@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, User, BufferedInputFile
 
 from config import ADMIN_IDS
+from utils.admins import is_admin, is_super_admin, cache_add_admin, cache_remove_admin
 from database.db_instance import db
 from utils.texts import extract_icon_from_message
 from utils.message_sender import send_stored_message
@@ -26,6 +27,7 @@ from keyboards.inline_keyboards import (
     get_admin_reports_list_kb, get_admin_report_actions_kb,
     get_circle_moderation_done_kb,
     get_admin_settings_menu_kb, get_admin_settings_list_kb, get_admin_setting_edit_kb,
+    get_admin_admins_kb,
 )
 from states.game_states import Admin
 from utils import app_config as appcfg
@@ -40,7 +42,7 @@ router = Router()
 
 class IsAdmin(Filter):
     async def __call__(self, event: Union[Message, CallbackQuery]) -> bool:
-        return event.from_user.id in ADMIN_IDS
+        return is_admin(event.from_user.id)
 
 
 _CLUTTER_DELETE_STATES = {
@@ -55,6 +57,7 @@ _CLUTTER_DELETE_STATES = {
     Admin.add_bait_circle_username.state, Admin.add_bait_message_text.state, Admin.add_bait_message_button.state,
     Admin.add_bait_message_delay.state,
     Admin.edit_setting_value.state, Admin.broadcast_add_button.state,
+    Admin.add_admin_user_id.state,
 }
 
 
@@ -70,7 +73,7 @@ class AdminClutterMiddleware(BaseMiddleware):
                 pre_state = None
         result = await handler(event, data)
         if (pre_state in _CLUTTER_DELETE_STATES and isinstance(event, Message)
-                and event.from_user and event.from_user.id in ADMIN_IDS):
+                and event.from_user and is_admin(event.from_user.id)):
             try:
                 await event.delete()
             except Exception:
@@ -109,6 +112,108 @@ async def cq_admin_main_menu(query: CallbackQuery, state: FSMContext):
         await query.message.edit_text("🛠 <b>Админ-панель Кружок-бота</b>", reply_markup=get_admin_main_menu_kb(open_reports))
     except Exception:
         await query.message.answer("🛠 <b>Админ-панель Кружок-бота</b>", reply_markup=get_admin_main_menu_kb(open_reports))
+
+
+# ===================== Администраторы =====================
+
+async def _render_admins_text() -> str:
+    lines = ["👮 <b>Администраторы</b>", ""]
+    if ADMIN_IDS:
+        lines.append("🔒 <b>Постоянные</b> (из .env, снять нельзя):")
+        for uid in ADMIN_IDS:
+            lines.append(f"• <code>{uid}</code>")
+        lines.append("")
+    lines.append("Выданные через панель — в кнопках ниже (❌ чтобы снять).")
+    lines.append("")
+    lines.append("Чтобы выдать админку: «➕ Добавить админа» → пришли числовой ID "
+                 "или перешли сюда любое сообщение от пользователя.")
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data == "admin:admins", IsAdmin())
+async def cq_admins(query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.answer()
+    admins = await db.get_bot_admins()
+    text = await _render_admins_text()
+    try:
+        await query.message.edit_text(text, reply_markup=get_admin_admins_kb(admins))
+    except Exception:
+        await query.message.answer(text, reply_markup=get_admin_admins_kb(admins))
+
+
+@router.callback_query(F.data == "admin:admin_add", IsAdmin())
+async def cq_admin_add(query: CallbackQuery, state: FSMContext):
+    await query.answer()
+    await state.set_state(Admin.add_admin_user_id)
+    await state.update_data(_wiz_msg=query.message.message_id)
+    await _wiz_edit(
+        query.message, state,
+        "👮 Пришли <b>числовой ID</b> пользователя или <b>перешли сюда</b> любое его сообщение, "
+        "чтобы выдать ему права администратора.",
+        reply_markup=get_admin_cancel_kb(),
+    )
+
+
+@router.message(Admin.add_admin_user_id, IsAdmin())
+async def process_admin_add(message: Message, state: FSMContext):
+    new_id = None
+    origin = getattr(message, 'forward_origin', None)
+    if origin is not None and getattr(origin, 'sender_user', None):
+        new_id = origin.sender_user.id
+    elif getattr(message, 'forward_from', None):
+        new_id = message.forward_from.id
+    elif message.text and message.text.strip().lstrip('-').isdigit():
+        new_id = int(message.text.strip())
+
+    if new_id is None:
+        await _wiz_edit(
+            message, state,
+            "⚠️ Не понял. Пришли числовой ID или перешли сообщение пользователя "
+            "(если у него скрыта пересылка — введи ID вручную).",
+            reply_markup=get_admin_cancel_kb(),
+        )
+        return
+
+    if is_super_admin(new_id):
+        await _wiz_edit(message, state,
+                        "ℹ️ Этот пользователь уже постоянный админ (из .env).",
+                        reply_markup=get_admin_cancel_kb())
+        return
+
+    added = await db.add_bot_admin(new_id, message.from_user.id)
+    cache_add_admin(new_id)
+
+    note = "✅ Выдал права администратора" if added else "ℹ️ Этот пользователь уже был админом"
+    admins = await db.get_bot_admins()
+    await _wiz_edit(message, state,
+                    f"{note}: <code>{new_id}</code>\n\n" + await _render_admins_text(),
+                    reply_markup=get_admin_admins_kb(admins))
+    await state.clear()
+
+    if added:
+        try:
+            await message.bot.send_message(
+                new_id, "🛠 Тебе выданы права администратора бота. Открой /admin.")
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("admin:admin_remove:"), IsAdmin())
+async def cq_admin_remove(query: CallbackQuery, state: FSMContext):
+    target = int(query.data.split(":")[-1])
+    if is_super_admin(target):
+        await query.answer("Это постоянный админ из .env — снять нельзя.", show_alert=True)
+        return
+    removed = await db.remove_bot_admin(target)
+    cache_remove_admin(target)
+    await query.answer("Права сняты." if removed else "Этот пользователь не был админом.")
+    admins = await db.get_bot_admins()
+    try:
+        await query.message.edit_text(await _render_admins_text(),
+                                      reply_markup=get_admin_admins_kb(admins))
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "admin:op_management", IsAdmin())

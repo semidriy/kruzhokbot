@@ -52,6 +52,7 @@ class Admin(StatesGroup):
     edit_setting_value = State()
     ban_user_id = State()
     unban_user_id = State()
+    add_admin_user_id = State()
 
     broadcast_message = State()
     broadcast_compose = State()

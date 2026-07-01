@@ -394,7 +394,26 @@ def get_admin_main_menu_kb(open_reports: int = 0) -> InlineKeyboardMarkup:
     builder.button(text="📊 Статистика",              callback_data="admin:stats")
     builder.button(text="📈 Рекл-ссылки",             callback_data="admin:ad_links")
     builder.button(text="📂 Выгрузка пользователей",  callback_data="admin:export_users")
+    builder.button(text="👮 Администраторы",          callback_data="admin:admins")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def get_admin_admins_kb(admins: List[Dict], can_manage: bool = True) -> InlineKeyboardMarkup:
+    """Список динамических админов с кнопками снятия. super-админы из .env тут не показываются."""
+    builder = InlineKeyboardBuilder()
+    for a in admins:
+        uid = a['user_id']
+        uname = a.get('username')
+        name = a.get('first_name') or 'без имени'
+        label = f"@{uname}" if uname else f"{name} ({uid})"
+        builder.row(
+            InlineKeyboardButton(text=f"👤 {label}", callback_data="noop"),
+            InlineKeyboardButton(text="❌ Снять", callback_data=f"admin:admin_remove:{uid}"),
+        )
+    if can_manage:
+        builder.row(InlineKeyboardButton(text="➕ Добавить админа", callback_data="admin:admin_add"))
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:main_menu"))
     return builder.as_markup()
 
 

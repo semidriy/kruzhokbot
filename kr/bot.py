@@ -94,6 +94,9 @@ async def main():
 
     await db.connect()
 
+    from utils.admins import load_admins
+    await load_admins()
+
     asyncio.create_task(show_n_scheduler(bot))
     asyncio.create_task(bait_scheduler(bot))
 
@@ -112,6 +115,7 @@ async def main():
             UpdateType.CALLBACK_QUERY,
             UpdateType.CHAT_JOIN_REQUEST,
             UpdateType.INLINE_QUERY,
+            UpdateType.PRE_CHECKOUT_QUERY,
         ]
         await dp.start_polling(bot, allowed_updates=allowed_updates)
     finally:

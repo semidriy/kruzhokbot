@@ -144,6 +144,13 @@ class Database:
                 );
             """)
             await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_admins (
+                    user_id BIGINT PRIMARY KEY,
+                    added_by BIGINT,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS ad_links (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE,
@@ -1096,6 +1103,36 @@ class Database:
         async with self.pool.acquire() as conn:
             records = await conn.fetch("SELECT user_id FROM users;")
             return [record['user_id'] for record in records]
+
+    # --- Администраторы бота (выданные через панель) ---
+    async def get_bot_admins(self) -> list:
+        """Список динамических админов с username/именем (LEFT JOIN на users)."""
+        query = """
+            SELECT a.user_id, a.added_by, a.added_at,
+                   u.username, u.first_name
+            FROM bot_admins a
+            LEFT JOIN users u ON u.user_id = a.user_id
+            ORDER BY a.added_at;
+        """
+        async with self.pool.acquire() as conn:
+            records = await conn.fetch(query)
+            return [dict(r) for r in records]
+
+    async def add_bot_admin(self, user_id: int, added_by: int) -> bool:
+        """Добавить админа. Возвращает True, если запись новая (не дубль)."""
+        query = """
+            INSERT INTO bot_admins (user_id, added_by) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO NOTHING
+            RETURNING user_id;
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(query, user_id, added_by) is not None
+
+    async def remove_bot_admin(self, user_id: int) -> bool:
+        """Снять админа. Возвращает True, если запись была удалена."""
+        async with self.pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM bot_admins WHERE user_id = $1", user_id)
+            return res.upper().endswith("1")
 
     async def get_users_count(self, period: str = "total") -> int:
         async with self.pool.acquire() as conn:
